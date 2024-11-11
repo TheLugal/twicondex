@@ -15,14 +15,18 @@ defmodule Twicondex.KeyServer do
   ## Returns
   - `{:ok, pid}` on success, where `pid` is the process ID of the GenServer.
   """
-  def start_link(config) do
+  def start_link(config \\ Application.get_env(:twicondex, :twitch_api_keys)) do
     GenServer.start_link(__MODULE__, config, name: __MODULE__)
   end
 
   @impl true
   def init(config) do
     # Set initial state to include the configuration map
-    {:ok, %{config: config, token_data: %{"access_token" => nil, "expires_at" => nil}}}
+    {:ok,
+     %{
+       config: config,
+       token_data: %{access_token: nil, expires_at: nil, client_id: config[:client_id]}
+     }}
   end
 
   @doc """
@@ -41,22 +45,12 @@ defmodule Twicondex.KeyServer do
     GenServer.call(__MODULE__, :get_token)
   end
 
-  def get_client(), do: Application.get_env(:twicondex, :twitch_api_keys)[:client_id]
+  def get_state do
+    GenServer.call(__MODULE__, :get_state)
+  end
 
-  @doc """
-  Retrieves the current OAuth token.
-
-  This function checks if the token has expired and fetches a new one if necessary.
-
-  ## Returns
-  - `"access_token"` if the token is valid or has been successfully refreshed.
-
-  ## Example
-      Twicondex.TokenServer.get_token!()
-  """
-  def get_token!() do
-    {:ok, token} = get_token()
-    token
+  def get_client_id() do
+    {:ok, Application.get_env(:twicondex, :twitch_api_keys)[:client_id]}
   end
 
   ## Server Callbacks
@@ -76,10 +70,15 @@ defmodule Twicondex.KeyServer do
   def handle_call(:get_token, _from, state) do
     token_data = state[:token_data]
 
-    case token_expired?(token_data["expires_at"]) do
+    case token_expired?(token_data[:expires_at]) do
       true -> fetch_and_store_token(state)
-      false -> {:reply, {:ok, token_data["access_token"]}, state}
+      false -> {:reply, {:ok, token_data[:access_token]}, state}
     end
+  end
+
+  @impl true
+  def handle_call(:get_state, _from, state) do
+    {:reply, {:ok, state}, state}
   end
 
   ## Helper Functions
@@ -93,13 +92,12 @@ defmodule Twicondex.KeyServer do
 
   # Fetch a new token and update the state
   defp fetch_and_store_token(state) do
-    # Ensure config values are present
-    %{client_id: client_id, client_secret: client_secret} = state.config
+    [client_id: client_id, client_secret: client_secret] = state.config
 
     case Twicondex.Client.fetch_access_token(client_id, client_secret) do
       {:ok, {access_token, expires_in}} ->
         expires_at = DateTime.add(DateTime.utc_now(), expires_in, :second)
-        new_token_data = %{"access_token" => access_token, "expires_at" => expires_at}
+        new_token_data = [access_token: access_token, expires_at: expires_at]
         new_state = %{state | token_data: new_token_data}
         {:reply, {:ok, access_token}, new_state}
 
